@@ -14,7 +14,7 @@ CORS(app)
 
 
 # SAVE_PATH = "./ai_detector_model" # local
-SAVE_PATH = "ngyishen/ai-detector-model"
+SAVE_PATH = "ngyishen/AISeeYou"
 
 tokenizer = DistilBertTokenizerFast.from_pretrained(SAVE_PATH)
 model = DistilBertForSequenceClassification.from_pretrained(SAVE_PATH)
