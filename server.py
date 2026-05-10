@@ -10,7 +10,7 @@ import torch
 
 app = FastAPI()
 
-MODEL_PATH = "./ai_detector_model"
+MODEL_PATH = "ngyishen/AISeeYou"
 
 tokenizer = DistilBertTokenizerFast.from_pretrained(MODEL_PATH)
 
