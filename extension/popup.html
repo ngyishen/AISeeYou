@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    width: 280px;
+    background: #0e0e10;
+    color: #e8e8e8;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    padding: 0 0 12px;
+    overflow: hidden;
+  }
+
+  .header {
+    background: #18181b;
+    border-bottom: 1px solid #2a2a2e;
+    padding: 14px 16px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .header-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ef4444;
+    box-shadow: 0 0 6px #ef4444aa;
+    flex-shrink: 0;
+  }
+
+  .header h3 {
+    font-family: 'DM Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    color: #f4f4f5;
+  }
+
+  .header span {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    color: #52525b;
+    margin-left: auto;
+  }
+
+  .section {
+    padding: 14px 16px 0;
+  }
+
+  .field {
+    margin-bottom: 14px;
+  }
+
+  label.field-label {
+    display: block;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #71717a;
+    margin-bottom: 6px;
+  }
+
+  input[type="number"] {
+    width: 100%;
+    background: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 6px;
+    color: #e4e4e7;
+    font-family: 'DM Mono', monospace;
+    font-size: 13px;
+    padding: 7px 10px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+
+  input[type="number"]:focus {
+    border-color: #3f3f46;
+  }
+
+  select {
+    width: 100%;
+    background: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 6px;
+    color: #e4e4e7;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    padding: 7px 10px;
+    outline: none;
+    appearance: none;
+    cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2352525b' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    transition: border-color 0.15s;
+  }
+
+  select:focus { border-color: #3f3f46; }
+
+  /* Bias Slider */
+  .slider-field {
+    margin-bottom: 14px;
+  }
+
+  .slider-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 8px;
+  }
+
+  .slider-value {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    color: #a1a1aa;
+    transition: color 0.2s;
+  }
+
+  .slider-track {
+    position: relative;
+    height: 28px;
+    display: flex;
+    align-items: center;
+  }
+
+  input[type="range"] {
+    width: 100%;
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: #27272a;
+    outline: none;
+    cursor: pointer;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #e4e4e7;
+    border: 2px solid #0e0e10;
+    box-shadow: 0 0 0 1px #52525b;
+    transition: box-shadow 0.15s, transform 0.15s;
+    cursor: pointer;
+  }
+
+  input[type="range"]::-webkit-slider-thumb:hover {
+    box-shadow: 0 0 0 3px #3f3f4680;
+    transform: scale(1.1);
+  }
+
+  .slider-labels {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
+  }
+
+  .slider-labels span {
+    font-size: 9px;
+    font-family: 'DM Mono', monospace;
+    color: #3f3f46;
+  }
+
+  .bias-hint {
+    font-size: 10px;
+    color: #52525b;
+    margin-top: 5px;
+    font-style: italic;
+  }
+
+  /* Toggle */
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-top: 1px solid #18181b;
+    margin-bottom: 14px;
+  }
+
+  .toggle-label {
+    font-size: 12px;
+    color: #a1a1aa;
+  }
+
+  .toggle {
+    position: relative;
+    width: 32px;
+    height: 18px;
+  }
+
+  .toggle input { opacity: 0; width: 0; height: 0; }
+
+  .toggle-slider {
+    position: absolute;
+    inset: 0;
+    background: #27272a;
+    border-radius: 9px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+
+  .toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #71717a;
+    top: 3px;
+    left: 3px;
+    transition: transform 0.2s, background 0.2s;
+  }
+
+  .toggle input:checked + .toggle-slider { background: #27272a; }
+
+  .toggle input:checked + .toggle-slider::before {
+    transform: translateX(14px);
+    background: #e4e4e7;
+  }
+
+  /* Divider */
+  .divider {
+    height: 1px;
+    background: #18181b;
+    margin: 4px 0 14px;
+  }
+
+  /* Buttons */
+  .actions {
+    padding: 0 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  button {
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: opacity 0.15s, transform 0.1s;
+    letter-spacing: 0.02em;
+  }
+
+  button:active { transform: scale(0.98); }
+
+  #save {
+    background: #e4e4e7;
+    color: #09090b;
+  }
+
+  #save:hover { opacity: 0.88; }
+
+  #download {
+    background: transparent;
+    border: 1px solid #27272a;
+    color: #71717a;
+  }
+
+  #download:hover { border-color: #3f3f46; color: #a1a1aa; }
+
+  .saved-toast {
+    text-align: center;
+    font-size: 10px;
+    font-family: 'DM Mono', monospace;
+    color: #22c55e;
+    height: 16px;
+    margin-top: 8px;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+
+  .saved-toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-dot"></div>
+  <h3>AISeeYou</h3>
+  <span>v1.0</span>
+</div>
+
+<div class="section">
+
+  <div class="field">
+    <label class="field-label">Min Words</label>
+    <input type="number" id="minWords" value="30" min="1">
+  </div>
+
+  <div class="field">
+    <label class="field-label">Mode</label>
+    <select id="mode">
+      <option value="highlight">Highlight</option>
+      <option value="block">Block</option>
+    </select>
+  </div>
+
+  <div class="slider-field">
+    <div class="slider-header">
+      <label class="field-label" style="margin:0">Detection Sensitivity</label>
+      <span class="slider-value" id="biasDisplay">50</span>
+    </div>
+    <div class="slider-track">
+      <input type="range" id="bias" min="0" max="100" value="50">
+    </div>
+    <div class="slider-labels">
+      <span>lenient</span>
+      <span>strict</span>
+    </div>
+    <div class="bias-hint" id="biasHint">Flags text above 80% AI probability</div>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="toggle-row">
+    <span class="toggle-label">Show Human %</span>
+    <label class="toggle">
+      <input type="checkbox" id="showHuman">
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+
+</div>
+
+<div class="actions">
+  <button id="save">Save Settings</button>
+  <button id="download">Download Logs</button>
+  <div class="saved-toast" id="toast">settings saved</div>
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>

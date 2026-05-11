@@ -1,35 +1,33 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-
-from transformers import (
-    DistilBertTokenizerFast,
-    DistilBertForSequenceClassification
-)
-
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 import torch
 
 app = FastAPI()
 
-MODEL_PATH = "ngyishen/AISeeYou"
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-tokenizer = DistilBertTokenizerFast.from_pretrained(MODEL_PATH)
+MODEL_ID = "ngyishen/AISeeYou"
 
-model = DistilBertForSequenceClassification.from_pretrained(MODEL_PATH)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+model = AutoModelForSequenceClassification.from_pretrained(MODEL_ID)
 
 model.eval()
 
-class TextRequest(BaseModel):
+class RequestBody(BaseModel):
     text: str
 
-@app.get("/")
-def home():
-    return {"status": "running"}
-
 @app.post("/predict")
-def predict(req: TextRequest):
+def predict(req: RequestBody):
 
     inputs = tokenizer(
-        req.text.lower(),
+        req.text,
         return_tensors="pt",
         truncation=True,
         padding=True,
@@ -39,15 +37,10 @@ def predict(req: TextRequest):
     with torch.no_grad():
         outputs = model(**inputs)
 
-    probs = torch.nn.functional.softmax(outputs.logits, dim=1)
-
-    human_prob = probs[0][0].item()
-    ai_prob = probs[0][1].item()
-
-    final = "Human" if human_prob > ai_prob else "AI"
+    probs = torch.softmax(outputs.logits, dim=1)[0]
 
     return {
-        "final_label": final,
-        "human_prob": human_prob,
-        "ai_prob": ai_prob
+        "human_prob": probs[0].item(),
+        "ai_prob": probs[1].item(),
+        "final_label": "Human" if probs[0] > probs[1] else "AI"
     }

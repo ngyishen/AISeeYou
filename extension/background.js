@@ -1,45 +1,11 @@
-chrome.contextMenus.removeAll(() => {
+chrome.runtime.onMessage.addListener((msg) => {
 
-    chrome.contextMenus.create({
-        id: "detectAI",
-        title: "Detect AI",
-        contexts: ["selection"]
-    });
+    if (msg.action === "downloadLogs") {
 
-});
-
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-
-    if (info.menuItemId !== "detectAI") return;
-
-    const selectedText = info.selectionText;
-
-    try {
-
-        const response = await fetch("http://localhost:5000/predict", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                text: selectedText
-            })
+        chrome.downloads.download({
+            url: msg.url,
+            filename: "ai_detector_logs.json",
+            saveAs: true
         });
-
-        const data = await response.json();
-
-        await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            files: ["content.js"]
-        });
-
-        chrome.tabs.sendMessage(tab.id, {
-            action: "showResult",
-            result: data
-        });
-
-    } catch (err) {
-        console.error(err);
     }
-
 });
