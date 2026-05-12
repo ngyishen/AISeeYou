@@ -4,3 +4,4 @@
 __pycache__/
 .env
 results/
+extension/onnx_model/model.onnx/
