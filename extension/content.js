@@ -1,329 +1,481 @@
-const API_URL = "http://127.0.0.1:8000/predict";
+// =====================
+// ORT SETUP
+// =====================
 
-let settings = {
-    minWords: 30,
-    debugMode: false,
-    mode: "highlight",
-    threshold: 0.80
-};
+// ort is imported at the top of this file via:
+//   import * as ort from "onnxruntime-web";
+// esbuild bundles it. WASM files must be in extension/wasm/ and listed
+// in manifest.json web_accessible_resources.
+// ort is NOT imported here — esbuild breaks ORT's internal WASM loading
+// when it bundles it. Instead, ort.min.js is listed before content.bundle.js
+// in manifest.json and exposes `ort` on globalThis automatically.
+// WASM path is configured once ORT is confirmed ready in waitForORT().
 
-const logs = [];
+let ortReady = false;
+let inferenceRunning = false;
+const inferenceQueue = [];
 
-// CHANGED: Map instead of Set
-const scannedHashes = new Map();
+const platformCooldown = new Map();
 
-const SKIP_HIGHLIGHT_TAGS = new Set([
-    "SCRIPT",
-    "STYLE",
-    "BUTTON",
-    "A",
-    "INPUT",
-    "TEXTAREA",
-    "SELECT",
-    "LABEL"
-]);
-
-const PLATFORMS = [
-    {
-        container: "article[data-testid='tweet']",
-        textNode: "[data-testid='tweetText']",
-        name: "X"
-    },
-    {
-        container: "[data-ad-preview='message']",
-        textNode: null,
-        name: "Facebook"
-    },
-    {
-        container: "div[data-testid='post_message']",
-        textNode: null,
-        name: "Facebook2"
-    },
-    {
-        container: "article[role='article']",
-        textNode: "div[dir='auto']",
-        name: "Threads"
-    },
-    {
-        container: ".feed-shared-update-v2",
-        textNode: ".feed-shared-update-v2__description",
-        name: "LinkedIn"
-    },
-    {
-        container: "shreddit-post",
-        textNode: "[slot='text-body']",
-        name: "Reddit"
-    },
-    {
-        container: "article",
-        textNode: null,
-        name: "Generic-article"
-    },
-    {
-        container: "blockquote",
-        textNode: null,
-        name: "Generic-blockquote"
-    }
-];
-
-console.log("AISeeYou LOADED");
-console.log("chrome.runtime exists:", !!chrome?.runtime);
-console.log("chrome.storage exists:", !!chrome?.storage);
-
-// ----------------------
-// SETTINGS
-// ----------------------
-function loadSettings(cb) {
-
-    if (!chrome || !chrome.storage || !chrome.storage.sync) {
-
-        console.warn("AISeeYou: chrome.storage.sync not available");
-
-        if (cb) cb();
-
-        return;
-    }
-
-    chrome.storage.sync.get(
-        ["minWords", "debugMode", "mode", "threshold"],
-        (data) => {
-
-            settings.minWords = data?.minWords ?? 30;
-            settings.debugMode = data?.debugMode ?? false;
-            settings.mode = data?.mode ?? "highlight";
-            settings.threshold = data?.threshold ?? 0.80;
-
-            if (cb) cb();
-        }
-    );
+function canScan(name, delay = 3000) {
+    const now = Date.now();
+    const last = platformCooldown.get(name) || 0;
+    if (now - last < delay) return false;
+    platformCooldown.set(name, now);
+    return true;
 }
 
-function dbg(...args) {
-
-    if (settings.debugMode) {
-        console.log("AISeeYou:", ...args);
-    }
-}
-
-// ----------------------
-// API CALL
-// ----------------------
-async function checkText(text) {
-
-    try {
-
-        const res = await fetch(API_URL, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({ text })
-        });
-
-        if (!res.ok) return null;
-
-        return await res.json();
-
-    } catch {
-        return null;
-    }
-}
-
-// ----------------------
-// HASH
-// ----------------------
-function simpleHash(text) {
-
-    let hash = 0;
-
-    for (let i = 0; i < text.length; i++) {
-
-        hash = ((hash << 5) - hash) + text.charCodeAt(i);
-        hash |= 0;
-    }
-
-    return hash.toString();
-}
-
-// ----------------------
-// LOGGING
-// ----------------------
-function log(text, words, score) {
-
-    logs.push({
-        text,
-        words,
-        score,
-        time: Date.now()
+function waitForORT() {
+    return new Promise((resolve, reject) => {
+        const start = Date.now();
+        const check = () => {
+            if (typeof globalThis.ort !== "undefined" && globalThis.ort.InferenceSession) {
+                // Configure WASM paths now that we know ort is present
+                globalThis.ort.env.wasm.wasmPaths = chrome.runtime.getURL("wasm/");
+                globalThis.ort.env.wasm.numThreads = 1;
+                globalThis.ort.env.wasm.proxy = false;
+                console.log("AISeeYou: ORT found on globalThis");
+                resolve();
+                return;
+            }
+            if (Date.now() - start > 15000) {
+                reject(new Error("ORT not found after 15s — is ort.min.js loaded before content.bundle.js in manifest.json?"));
+                return;
+            }
+            setTimeout(check, 100);
+        };
+        check();
     });
 }
 
-// ----------------------
-// VISIBILITY CHECK
-// ----------------------
+// =====================
+// TOKENIZER
+// BERT WordPiece — inlined so no external library or load-order dependency.
+// Matches tokenizer.json exactly: BertNormalizer + BertPreTokenizer +
+// WordPiece, sequence [CLS] tokens [SEP] padded to 128, outputs int64.
+// =====================
+
+const TOKENIZER = {
+
+    vocab: null,
+    maxLen: 128,
+    CLS: 101, SEP: 102, PAD: 0, UNK: 100,
+
+    async load() {
+        const url = chrome.runtime.getURL("onnx_model/tokenizer.json");
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("tokenizer.json fetch failed: " + res.status);
+        const tj = await res.json();
+        this.vocab = tj.model.vocab;
+        console.log("AISeeYou: BERT tokenizer loaded, vocab:", Object.keys(this.vocab).length);
+    },
+
+    _isWhitespace(cp) {
+        return cp === 0x20 || cp === 0x09 || cp === 0x0a || cp === 0x0d;
+    },
+
+    _isControl(cp) {
+        if (cp === 0x09 || cp === 0x0a || cp === 0x0d) return false;
+        return (cp >= 0x00 && cp <= 0x1f) || (cp >= 0x7f && cp <= 0x9f);
+    },
+
+    _isChineseCJK(cp) {
+        return (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3400 && cp <= 0x4DBF) ||
+            (cp >= 0xF900 && cp <= 0xFAFF);
+    },
+
+    _isPunct(cp) {
+        if ((cp >= 33 && cp <= 47) || (cp >= 58 && cp <= 64) ||
+            (cp >= 91 && cp <= 96) || (cp >= 123 && cp <= 126)) return true;
+        return /\p{P}|\p{S}/u.test(String.fromCodePoint(cp));
+    },
+
+    _normalize(text) {
+        text = text.toLowerCase();
+        let out = "";
+        for (const ch of text) {
+            const cp = ch.codePointAt(0);
+            if (cp === 0 || cp === 0xfffd) continue;
+            if (this._isControl(cp)) continue;
+            if (this._isWhitespace(cp)) { out += " "; continue; }
+            if (this._isChineseCJK(cp)) { out += " " + ch + " "; continue; }
+            out += ch;
+        }
+        return out;
+    },
+
+    _preTokenize(text) {
+        const tokens = [];
+        for (const word of text.split(/\s+/).filter(Boolean)) {
+            let cur = "";
+            for (const ch of word) {
+                if (this._isPunct(ch.codePointAt(0))) {
+                    if (cur) { tokens.push(cur); cur = ""; }
+                    tokens.push(ch);
+                } else {
+                    cur += ch;
+                }
+            }
+            if (cur) tokens.push(cur);
+        }
+        return tokens;
+    },
+
+    _wordpiece(word) {
+        if (this.vocab[word] !== undefined) return [word];
+        const chars = [...word];
+        const out = [];
+        let start = 0;
+        while (start < chars.length) {
+            let end = chars.length, found = null;
+            while (start < end) {
+                const sub = (start === 0 ? "" : "##") + chars.slice(start, end).join("");
+                if (this.vocab[sub] !== undefined) { found = sub; break; }
+                end--;
+            }
+            if (!found) return ["[UNK]"];
+            out.push(found);
+            start = end;
+        }
+        return out;
+    },
+
+    preprocess(text) {
+        if (!this.vocab) throw new Error("Tokenizer not loaded");
+
+        const words = this._preTokenize(this._normalize(text));
+        const contentIds = [];
+
+        for (const word of words) {
+            for (const sw of this._wordpiece(word)) {
+                contentIds.push(this.vocab[sw] ?? this.UNK);
+                if (contentIds.length >= this.maxLen - 2) break;
+            }
+            if (contentIds.length >= this.maxLen - 2) break;
+        }
+
+        const ids = [this.CLS, ...contentIds, this.SEP];
+        const seqLen = ids.length;
+        while (ids.length < this.maxLen) ids.push(this.PAD);
+
+        const attn = ids.map((_, i) => i < seqLen ? 1 : 0);
+        const typeIds = new Array(this.maxLen).fill(0);
+
+        console.log("AISeeYou: tokenized", seqLen, "tokens, padded to", this.maxLen);
+
+        return {
+            input_ids: new globalThis.ort.Tensor("int64", BigInt64Array.from(ids.map(BigInt)), [1, this.maxLen]),
+            attention_mask: new globalThis.ort.Tensor("int64", BigInt64Array.from(attn.map(BigInt)), [1, this.maxLen])//,
+            // token_type_ids: new globalThis.ort.Tensor("int64", BigInt64Array.from(typeIds.map(BigInt)), [1, this.maxLen])
+        };
+    }
+};
+
+
+// =====================
+// STATE
+// =====================
+
+let session = null;
+const logs = [];
+const MAX_WORDS = 800;
+
+const settings = {
+    minWords: 30,
+    threshold: 0.80,
+    mode: "highlight"
+};
+
+const scannedHashes = new Map();
+
+// =====================
+// PLATFORMS
+// =====================
+
+const PLATFORMS = [
+    {
+        name: "X",
+        container: "article[data-testId='tweet']",
+        textNode: "[data-testid='tweetText']"
+    },
+    {
+        name: "Facebook",
+        container: "[data-ad-preview='message']",
+        textNode: null
+    },
+    {
+        name: "Facebook2",
+        container: "div[data-testid='post_message']",
+        textNode: null
+    },
+    {
+        name: "Threads",
+        container: "article[role='article']", 
+        textNode: "div[dir='auto']"
+    },
+    {
+        name: "LinkedIn",
+        container: "article",
+        textNode: null
+    },
+    {
+        name: "Reddit",
+        container: "shreddit-post",
+        textNode: "[slot='text-body']"
+    },
+    {
+        name: "Generic-article",
+        container: "article",
+        textNode: null
+    },
+    {
+        name: "Generic-blockquote",
+        container: "blockquote",
+        textNode: null
+    }
+];
+
+// =====================
+// UTILS
+// =====================
+
+function simpleHash(text) {
+    let h = 0;
+    for (let i = 0; i < text.length; i++) {
+        h = ((h << 5) - h) + text.charCodeAt(i);
+        h |= 0;
+    }
+    return h.toString();
+}
+
 function isVisible(el) {
-
+    if (!el) return false;
     const rect = el.getBoundingClientRect();
-
     return rect.width > 0 && rect.height > 0;
 }
 
-// ----------------------
-// HIGHLIGHT
-// ----------------------
-function highlightElement(textEl, score) {
-
-    if (!textEl.isConnected) return;
-
-    if (textEl.dataset.aiScanned === "true") return;
-
-    textEl.dataset.aiScanned = "true";
-
-    const midThreshold = settings.threshold - 0.15;
-
-    const color =
-        score > settings.threshold
-            ? "rgba(255,0,0,0.18)"
-            : score > midThreshold
-            ? "rgba(255,165,0,0.16)"
-            : "rgba(0,200,0,0.10)";
-
-    const badgeColor =
-        score > settings.threshold
-            ? "red"
-            : score > midThreshold
-            ? "orange"
-            : "green";
-
-    textEl.style.setProperty(
-        "background",
-        color,
-        "important"
-    );
-
-    textEl.style.setProperty(
-        "border-radius",
-        "6px",
-        "important"
-    );
-
-    textEl.style.setProperty(
-        "padding",
-        "2px 4px",
-        "important"
-    );
-
-    if (textEl.querySelector(".ai-detector-badge")) return;
-
-    const badge = document.createElement("span");
-
-    badge.className = "ai-detector-badge";
-
-    badge.textContent =
-        " AI " + (score * 100).toFixed(1) + "%";
-
-    badge.setAttribute(
-        "style",
-        `
-        display:inline-block !important;
-        margin-left:6px !important;
-        margin-top:4px !important;
-        padding:2px 6px !important;
-        border-radius:4px !important;
-        font-size:10px !important;
-        font-weight:bold !important;
-        color:white !important;
-        background:${badgeColor} !important;
-        vertical-align:middle !important;
-        `
-    );
-
-    textEl.appendChild(badge);
+function softmax(arr) {
+    const max = Math.max(...arr);
+    const exps = arr.map(x => Math.exp(x - max));
+    const sum = exps.reduce((a, b) => a + b, 0);
+    return exps.map(x => x / sum);
 }
 
-// ----------------------
+function resolveBestTextEl(containerEl, textSelector) {
+
+    if (!textSelector) return containerEl;
+
+    const candidates = [...containerEl.querySelectorAll(textSelector)];
+
+    if (candidates.length === 0) return null;
+
+    return candidates.reduce((best, el) =>
+        (el.innerText?.length ?? 0) > (best.innerText?.length ?? 0) ? el : best
+    );
+}
+
+// =====================
+// MODEL LOAD
+// =====================
+
+async function loadModel() {
+
+    const modelUrl = chrome.runtime.getURL("onnx_model/model.onnx");
+    console.log("AISeeYou: loading model from", modelUrl);
+
+    const res = await fetch(modelUrl);
+    if (!res.ok) throw new Error("Model fetch failed: " + res.status);
+
+    const modelBuffer = await res.arrayBuffer();
+    console.log("AISeeYou: model buffer size:", modelBuffer.byteLength);
+
+    session = await globalThis.ort.InferenceSession.create(modelBuffer, {
+        executionProviders: ["wasm"]
+    });
+
+    console.log("AISeeYou: model loaded, inputs:", session.inputNames, "outputs:", session.outputNames);
+}
+
+// =====================
+// INFERENCE QUEUE
+// ORT wasm only runs one session.run() at a time. A proper explicit queue
+// (not a promise chain) is used so resolved promises are released from
+// memory and don't accumulate across the page session.
+// =====================
+
+function runNextInQueue() {
+
+    if (inferenceRunning || inferenceQueue.length === 0) return;
+
+    inferenceRunning = true;
+
+    const { text, resolve, reject } = inferenceQueue.shift();
+
+    const inputs = TOKENIZER.preprocess(text);
+
+    session.run(inputs)
+        .then(output => {
+
+            const key = Object.keys(output)[0];
+            const raw = Array.from(output[key].data);
+
+            console.log("AISeeYou: raw output (" + raw.length + " values):", raw);
+
+            let score;
+
+            if (raw.length === 1) {
+                // Single sigmoid output — value IS the AI probability
+                score = raw[0];
+            } else {
+                // Multi-class: softmax then take the AI class
+                // Log both orderings so you can confirm which is correct
+                const probs = softmax(raw);
+                console.log("AISeeYou: probs[0] (human?):", probs[0], "probs[1] (AI?):", probs[1]);
+                score = probs[1];
+            }
+
+            console.log("AISeeYou: final score:", score);
+
+            inferenceRunning = false;
+            resolve(score);
+            runNextInQueue();
+        })
+        .catch(err => {
+            console.error("AISeeYou: session.run failed:", err);
+            inferenceRunning = false;
+            reject(err);
+            runNextInQueue();
+        });
+}
+
+function predict(text) {
+    return new Promise((resolve, reject) => {
+        inferenceQueue.push({ text, resolve, reject });
+        runNextInQueue();
+    });
+}
+
+// =====================
+// HIGHLIGHT
+// Background is applied to the containerEl (which always has block layout
+// and real dimensions) rather than textEl, which on X/Threads can be an
+// inline span whose layout collapses if display is changed.
+// Badge is appended to containerEl so it always has a visible anchor.
+// =====================
+
+function highlightElement(containerEl, textEl, score) {
+
+    if (!containerEl.isConnected) return;
+    if (containerEl.dataset.aiDone === "true") return;
+
+    containerEl.dataset.aiDone = "true";
+
+    const mid = settings.threshold - 0.15;
+
+    const color =
+        score > settings.threshold ? "rgba(255,0,0,0.35)"
+            : score > mid ? "rgba(255,165,0,0.30)"
+                : "rgba(0,200,0,0.20)";
+
+    const badgeColor =
+        score > settings.threshold ? "red"
+            : score > mid ? "orange"
+                : "green";
+
+    // Apply background to containerEl — it always has block layout and
+    // real dimensions. Applying to an inline textEl (e.g. X's tweetText
+    // span) breaks the platform layout and gets overridden.
+    containerEl.style.setProperty("outline", "2px solid " + badgeColor, "important");
+    containerEl.style.setProperty("background", color, "important");
+
+    if (containerEl.querySelector(".ai-detector-badge")) return;
+
+    const badge = document.createElement("div");
+    badge.className = "ai-detector-badge";
+    badge.textContent = "AI " + (score * 100).toFixed(1) + "%";
+    badge.setAttribute("style",
+        "display:block !important;" +
+        "width:fit-content !important;" +
+        "margin:4px 0 0 0 !important;" +
+        "padding:2px 8px !important;" +
+        "border-radius:4px !important;" +
+        "font-size:11px !important;" +
+        "font-weight:bold !important;" +
+        "font-family:sans-serif !important;" +
+        "color:white !important;" +
+        "background:" + badgeColor + " !important;" +
+        "line-height:1.6 !important;" +
+        "pointer-events:none !important;" +
+        "z-index:9999 !important;" +
+        "position:relative !important;"
+    );
+
+    containerEl.appendChild(badge);
+}
+
+// =====================
 // BLOCK OVERLAY
-// ----------------------
+// =====================
+
 function blockElement(containerEl) {
 
     if (!containerEl.isConnected) return;
-
     if (containerEl.dataset.aiBlocked === "true") return;
 
     containerEl.dataset.aiBlocked = "true";
 
     if (getComputedStyle(containerEl).position === "static") {
-
-        containerEl.style.setProperty(
-            "position",
-            "relative",
-            "important"
-        );
+        containerEl.style.setProperty("position", "relative", "important");
     }
 
     const overlay = document.createElement("div");
-
-    overlay.className = "ai-detector-block-overlay";
-
-    overlay.setAttribute(
-        "style",
-        `
-        position:absolute !important;
-        inset:0 !important;
-        background:rgba(10,10,10,0.88) !important;
-        display:flex !important;
-        align-items:center !important;
-        justify-content:center !important;
-        z-index:9999 !important;
-        border-radius:4px !important;
-        `
+    overlay.setAttribute("style",
+        "position:absolute !important;" +
+        "inset:0 !important;" +
+        "background:rgba(10,10,10,0.88) !important;" +
+        "display:flex !important;" +
+        "align-items:center !important;" +
+        "justify-content:center !important;" +
+        "z-index:9999 !important;" +
+        "border-radius:4px !important;"
     );
 
     const warning = document.createElement("div");
-
-    warning.setAttribute(
-        "style",
-        `
-        padding:12px 16px !important;
-        background:rgba(255,0,0,0.12) !important;
-        border:1px solid red !important;
-        border-radius:5px !important;
-        font-size:12px !important;
-        color:red !important;
-        text-align:center !important;
-        max-width:320px !important;
-        `
+    warning.textContent = "This content has been blocked — high probability of being AI generated.";
+    warning.setAttribute("style",
+        "padding:12px 16px !important;" +
+        "background:rgba(255,0,0,0.12) !important;" +
+        "border:1px solid red !important;" +
+        "border-radius:5px !important;" +
+        "font-size:12px !important;" +
+        "color:red !important;" +
+        "text-align:center !important;" +
+        "max-width:320px !important;"
     );
 
-    warning.textContent =
-        "This content has been blocked — high probability of being AI generated.";
-
     overlay.appendChild(warning);
-
     containerEl.appendChild(overlay);
 }
 
-// ----------------------
-// SCAN CONTAINER
-// ----------------------
+// =====================
+// SCAN ONE CONTAINER
+// =====================
+
 async function scanContainer(containerEl, textSelector, platformName) {
 
     if (!containerEl) return;
-
+    if (!isVisible(containerEl)) return;
     if (containerEl.dataset.aiBlocked === "true") return;
+    if (containerEl.dataset.aiQueued === "true") return;
 
-    const textEl = textSelector
-        ? containerEl.querySelector(textSelector)
-        : containerEl;
+    containerEl.dataset.aiQueued = "true";
+
+    const textEl = resolveBestTextEl(containerEl, textSelector);
 
     if (!textEl) {
-
-        dbg("no textEl found for", platformName);
-
+        console.warn("AISeeYou:", platformName, "— no text element, selector:", textSelector);
         return;
     }
-
-    if (textEl.dataset.aiScanned === "true") return;
 
     const text = textEl.innerText?.trim();
 
@@ -331,108 +483,115 @@ async function scanContainer(containerEl, textSelector, platformName) {
 
     const words = text.split(/\s+/).length;
 
-    dbg(platformName, "found", words, "words");
+    console.log("AISeeYou:", platformName, "—", words, "words");
 
-    if (words < settings.minWords) return;
-
-    if (words > 800) return;
+    if (words < settings.minWords || words > MAX_WORDS) return;
 
     const hash = simpleHash(text);
-
     const now = Date.now();
+    const prev = scannedHashes.get(hash);
 
-    const existing = scannedHashes.get(hash);
-
-    // CHANGED: temporary dedupe instead of permanent
-    if (existing && now - existing < 15000) {
-        return;
-    }
+    if (prev && now - prev < 15000) return;
 
     scannedHashes.set(hash, now);
 
-    // cleanup old hashes
-    if (scannedHashes.size > 2000) {
+    try {
 
-        for (const [k, t] of scannedHashes.entries()) {
+        const score = await predict(text);
 
-            if (now - t > 60000) {
-                scannedHashes.delete(k);
-            }
+        console.log("AISeeYou:", platformName, "— score:", score);
+
+        logs.push({ platform: platformName, text: text.slice(0, 200), words, score, time: Date.now() });
+
+        if (settings.mode === "block" && score > settings.threshold) {
+            blockElement(containerEl);
+        } else {
+            highlightElement(containerEl, textEl, score);
         }
-    }
 
-    dbg("sending to API:", text.slice(0, 60));
-
-    const result = await checkText(text);
-
-    if (!result) {
-
-        dbg("API failed");
-
-        return;
-    }
-
-    const score = result.ai_prob;
-
-    dbg("score:", score);
-
-    log(text, words, score);
-
-    if (
-        settings.mode === "block" &&
-        score > settings.threshold
-    ) {
-
-        blockElement(containerEl);
-
-    } else {
-
-        highlightElement(textEl, score);
+    } catch (err) {
+        console.error("AISeeYou: predict failed:", err);
     }
 }
 
-// ----------------------
+// =====================
 // SCAN PAGE
-// ----------------------
+// =====================
+
 function scanPage() {
+
+    if (!ortReady) return;
 
     PLATFORMS.forEach(({ container, textNode, name }) => {
 
-        const matches =
-            document.querySelectorAll(container);
+        if (!canScan(name)) return;
 
-        dbg(name, "matched", matches.length);
+        const matches = document.querySelectorAll(container);
 
-        matches.forEach(containerEl => {
+        if (matches.length > 0) {
+            console.log("AISeeYou:", name, "— matched", matches.length);
+        }
 
-            if (!isVisible(containerEl)) return;
-
-            scanContainer(
-                containerEl,
-                textNode,
-                name
-            );
-        });
+        matches.forEach(el => scanContainer(el, textNode, name));
     });
 }
 
-// ----------------------
-// INITIAL SCAN
-// ----------------------
-setTimeout(() => {
+// =====================
+// SETTINGS
+// =====================
 
-    loadSettings(() => {
+function loadSettings(cb) {
 
-        dbg("settings loaded");
+    if (!chrome?.storage?.sync) {
+        if (cb) cb();
+        return;
+    }
+
+    chrome.storage.sync.get(
+        ["minWords", "mode", "threshold"],
+        (data) => {
+            settings.minWords = data?.minWords ?? 30;
+            settings.mode = data?.mode ?? "highlight";
+            settings.threshold = data?.threshold ?? 0.80;
+            if (cb) cb();
+        }
+    );
+}
+
+// =====================
+// BOOTSTRAP
+// =====================
+
+async function bootstrap() {
+
+    try {
+
+        console.log("AISeeYou: waiting for ORT...");
+        await waitForORT();
+        console.log("AISeeYou: ORT ready");
+
+        await TOKENIZER.load();
+        await loadModel();
+
+        await new Promise(resolve => loadSettings(resolve));
+
+        ortReady = true;
+
+        console.log("AISeeYou: bootstrap complete");
 
         scanPage();
-    });
 
-}, 2000);
+    } catch (err) {
+        console.error("AISeeYou: bootstrap failed:", err);
+    }
+}
 
-// ----------------------
-// OBSERVER
-// ----------------------
+bootstrap();
+
+// =====================
+// MUTATION OBSERVER
+// =====================
+
 let running = false;
 
 const observer = new MutationObserver(() => {
@@ -442,43 +601,31 @@ const observer = new MutationObserver(() => {
     running = true;
 
     setTimeout(() => {
-
         scanPage();
-
         running = false;
-
-    }, 1500);
+    }, 1200);
 });
 
-observer.observe(document.body, {
-    childList: true,
-    subtree: true
-});
+observer.observe(document.body, { childList: true, subtree: true });
 
-// ----------------------
-// MESSAGES
-// ----------------------
+// =====================
+// MESSAGE LISTENER
+// =====================
+
 chrome.runtime.onMessage.addListener((msg) => {
 
     if (msg.action === "exportLogs") {
 
         const blob = new Blob(
             [JSON.stringify(logs, null, 2)],
-            {
-                type: "application/json"
-            }
+            { type: "application/json" }
         );
 
         const url = URL.createObjectURL(blob);
-
-        chrome.runtime.sendMessage({
-            action: "downloadLogs",
-            url
-        });
+        chrome.runtime.sendMessage({ action: "downloadLogs", url });
     }
 
     if (msg.action === "settingsChanged") {
-
         loadSettings();
     }
 });

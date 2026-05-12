@@ -2,25 +2,49 @@
   "manifest_version": 3,
   "name": "AISeeYou",
   "version": "1.0",
-
-  "permissions": ["storage", "downloads", "activeTab"],
-  "background": {
-    "service_worker": "background.js"
-  },
-
-  "host_permissions": ["<all_urls>"],
-
+  "description": "Detects AI-generated content on social media feeds.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "downloads"
+  ],
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*",
+        "https://www.threads.net/*",
+        "https://threads.net/*",
+        "https://www.facebook.com/*",
+        "https://facebook.com/*",
+        "https://www.linkedin.com/*",
+        "https://www.reddit.com/*",
+        "https://old.reddit.com/*"
+      ],
+      "js": [
+        "libs/ort.min.js",
+        "content.bundle.js"
+      ],
       "run_at": "document_idle"
     }
   ],
-
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_popup": "popup.html"
-  }
-
-
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "wasm/*",
+        "onnx_model/*",
+        "libs/*"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
 }
