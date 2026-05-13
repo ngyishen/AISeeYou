@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "AISeeYou",
   "version": "1.0",
-  "description": "Detects AI-generated content on social media feeds.",
+  "description": "Detects AI-generated text on social media feeds.",
   "permissions": [
     "storage",
     "activeTab",

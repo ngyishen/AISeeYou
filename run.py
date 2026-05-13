@@ -46,7 +46,6 @@ def predict_text(text):
         "ai_prob": ai_prob
     }
 
-# Flask app
 app = Flask(__name__)
 
 @app.route("/")
