@@ -3,6 +3,14 @@
   var ortReady = false;
   var inferenceRunning = false;
   var inferenceQueue = [];
+  var platformCooldown = /* @__PURE__ */ new Map();
+  function canScan(name, delay = 3e3) {
+    const now = Date.now();
+    const last = platformCooldown.get(name) || 0;
+    if (now - last < delay) return false;
+    platformCooldown.set(name, now);
+    return true;
+  }
   function waitForORT() {
     return new Promise((resolve, reject) => {
       const start = Date.now();
@@ -143,7 +151,8 @@
   var settings = {
     minWords: 30,
     threshold: 0.8,
-    mode: "highlight"
+    mode: "highlight",
+    showHuman: true
   };
   var scannedHashes = /* @__PURE__ */ new Map();
   var PLATFORMS = [
@@ -166,26 +175,6 @@
       name: "Threads",
       container: "article[role='article']",
       textNode: "div[dir='auto']"
-    },
-    {
-      name: "LinkedIn",
-      container: ".feed-shared-update-v2",
-      textNode: ".feed-shared-update-v2__description"
-    },
-    {
-      name: "Reddit",
-      container: "shreddit-post",
-      textNode: "[slot='text-body']"
-    },
-    {
-      name: "Generic-article",
-      container: "article",
-      textNode: null
-    },
-    {
-      name: "Generic-blockquote",
-      container: "blockquote",
-      textNode: null
     }
   ];
   function simpleHash(text) {
@@ -263,14 +252,17 @@
   }
   function highlightElement(containerEl, textEl, score) {
     if (!containerEl.isConnected) return;
-    if (containerEl.dataset.aiDone === "true") return;
-    containerEl.dataset.aiDone = "true";
+    const existing = containerEl.querySelector(".ai-detector-badge");
+    if (existing) existing.remove();
+    containerEl.style.removeProperty("background");
+    containerEl.style.removeProperty("outline");
     const mid = settings.threshold - 0.15;
+    if (!settings.showHuman && score <= settings.threshold) return;
+    containerEl.dataset.aiDone = "true";
     const color = score > settings.threshold ? "rgba(255,0,0,0.35)" : score > mid ? "rgba(255,165,0,0.30)" : "rgba(0,200,0,0.20)";
     const badgeColor = score > settings.threshold ? "red" : score > mid ? "orange" : "green";
     containerEl.style.setProperty("outline", "2px solid " + badgeColor, "important");
     containerEl.style.setProperty("background", color, "important");
-    if (containerEl.querySelector(".ai-detector-badge")) return;
     const badge = document.createElement("div");
     badge.className = "ai-detector-badge";
     badge.textContent = "AI " + (score * 100).toFixed(1) + "%";
@@ -307,37 +299,52 @@
     if (containerEl.dataset.aiBlocked === "true") return;
     if (containerEl.dataset.aiQueued === "true") return;
     containerEl.dataset.aiQueued = "true";
-    const textEl = resolveBestTextEl(containerEl, textSelector);
-    if (!textEl) {
-      console.warn("AISeeYou:", platformName, "\u2014 no text element, selector:", textSelector);
-      return;
+    const seeMore = [...containerEl.querySelectorAll("div[role='button'], span[role='button']")].find((el) => /^\s*see more\s*$/i.test(el.innerText));
+    if (seeMore) {
+      seeMore.click();
+      await new Promise((r) => setTimeout(r, 500));
     }
+    const textEl = resolveBestTextEl(containerEl, textSelector);
+    if (!textEl) return;
     const text = textEl.innerText?.trim();
     if (!text) return;
     const words = text.split(/\s+/).length;
-    console.log("AISeeYou:", platformName, "\u2014", words, "words");
     if (words < settings.minWords || words > MAX_WORDS) return;
     const hash = simpleHash(text);
     const now = Date.now();
     const prev = scannedHashes.get(hash);
     if (prev && now - prev < 15e3) return;
     scannedHashes.set(hash, now);
+    debugTokens(text);
     try {
       const score = await predict(text);
-      console.log("AISeeYou:", platformName, "\u2014 score:", score);
+      containerEl.dataset.aiScore = score;
       logs.push({ platform: platformName, text: text.slice(0, 200), words, score, time: Date.now() });
-      if (settings.mode === "block" && score > settings.threshold) {
-        blockElement(containerEl);
-      } else {
-        highlightElement(containerEl, textEl, score);
-      }
+      applyResult(containerEl, textEl, score, platformName);
     } catch (err) {
       console.error("AISeeYou: predict failed:", err);
+    }
+  }
+  function applyResult(containerEl, textEl, score, platformName) {
+    if (!containerEl.isConnected) return;
+    containerEl.dataset.aiDone = "false";
+    containerEl.dataset.aiBlocked = "false";
+    const badge = containerEl.querySelector(".ai-detector-badge");
+    if (badge) badge.remove();
+    containerEl.style.removeProperty("background");
+    containerEl.style.removeProperty("outline");
+    const mid = settings.threshold - 0.15;
+    if (!settings.showHuman && score <= settings.threshold) return;
+    if (settings.mode === "block" && score > settings.threshold) {
+      blockElement(containerEl);
+    } else {
+      highlightElement(containerEl, textEl, score);
     }
   }
   function scanPage() {
     if (!ortReady) return;
     PLATFORMS.forEach(({ container, textNode, name }) => {
+      if (!canScan(name)) return;
       const matches = document.querySelectorAll(container);
       if (matches.length > 0) {
         console.log("AISeeYou:", name, "\u2014 matched", matches.length);
@@ -351,11 +358,12 @@
       return;
     }
     chrome.storage.sync.get(
-      ["minWords", "mode", "threshold"],
+      ["minWords", "mode", "threshold", "showHuman"],
       (data) => {
         settings.minWords = data?.minWords ?? 30;
         settings.mode = data?.mode ?? "highlight";
         settings.threshold = data?.threshold ?? 0.8;
+        settings.showHuman = data?.showHuman ?? true;
         if (cb) cb();
       }
     );
@@ -396,7 +404,34 @@
       chrome.runtime.sendMessage({ action: "downloadLogs", url });
     }
     if (msg.action === "settingsChanged") {
-      loadSettings();
+      loadSettings(() => {
+        document.querySelectorAll("[data-ai-score]").forEach((el) => {
+          const score = parseFloat(el.dataset.aiScore);
+          el.dataset.aiDone = "false";
+          const textEl = resolveBestTextEl(el, null);
+          highlightElement(el, textEl, score);
+        });
+      });
     }
   });
+  function debugTokens(text) {
+    const normalized = TOKENIZER._normalize(text);
+    const pre = TOKENIZER._preTokenize(normalized);
+    const pieces = [];
+    const ids = [];
+    for (const word of pre) {
+      const wp = TOKENIZER._wordpiece(word);
+      for (const p of wp) {
+        pieces.push(p);
+        ids.push(TOKENIZER.vocab[p] ?? TOKENIZER.UNK);
+      }
+    }
+    const finalIds = [TOKENIZER.CLS, ...ids.slice(0, TOKENIZER.maxLen - 2), TOKENIZER.SEP];
+    while (finalIds.length < TOKENIZER.maxLen) finalIds.push(TOKENIZER.PAD);
+    console.log("normalized", normalized);
+    console.log("preTokens", pre);
+    console.log("wordpieces", pieces);
+    console.log("tokenIds", finalIds);
+    console.log("attentionMask", finalIds.map((_, i) => i < ids.length + 2 ? 1 : 0));
+  }
 })();

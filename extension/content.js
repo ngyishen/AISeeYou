@@ -1,6 +1,4 @@
-// =====================
 // ORT SETUP
-// =====================
 
 // ort is imported at the top of this file via:
 //   import * as ort from "onnxruntime-web";
@@ -48,12 +46,10 @@ function waitForORT() {
     });
 }
 
-// =====================
 // TOKENIZER
 // BERT WordPiece — inlined so no external library or load-order dependency.
 // Matches tokenizer.json exactly: BertNormalizer + BertPreTokenizer +
 // WordPiece, sequence [CLS] tokens [SEP] padded to 128, outputs int64.
-// =====================
 
 const TOKENIZER = {
 
@@ -172,9 +168,7 @@ const TOKENIZER = {
 };
 
 
-// =====================
 // STATE
-// =====================
 
 let session = null;
 const logs = [];
@@ -183,14 +177,13 @@ const MAX_WORDS = 800;
 const settings = {
     minWords: 30,
     threshold: 0.80,
-    mode: "highlight"
+    mode: "highlight",
+    showHuman: true
 };
 
 const scannedHashes = new Map();
 
-// =====================
 // PLATFORMS
-// =====================
 
 const PLATFORMS = [
     {
@@ -212,32 +205,10 @@ const PLATFORMS = [
         name: "Threads",
         container: "article[role='article']", 
         textNode: "div[dir='auto']"
-    },
-    {
-        name: "LinkedIn",
-        container: "article",
-        textNode: null
-    },
-    {
-        name: "Reddit",
-        container: "shreddit-post",
-        textNode: "[slot='text-body']"
-    },
-    {
-        name: "Generic-article",
-        container: "article",
-        textNode: null
-    },
-    {
-        name: "Generic-blockquote",
-        container: "blockquote",
-        textNode: null
     }
 ];
 
-// =====================
 // UTILS
-// =====================
 
 function simpleHash(text) {
     let h = 0;
@@ -274,9 +245,7 @@ function resolveBestTextEl(containerEl, textSelector) {
     );
 }
 
-// =====================
 // MODEL LOAD
-// =====================
 
 async function loadModel() {
 
@@ -296,12 +265,10 @@ async function loadModel() {
     console.log("AISeeYou: model loaded, inputs:", session.inputNames, "outputs:", session.outputNames);
 }
 
-// =====================
 // INFERENCE QUEUE
 // ORT wasm only runs one session.run() at a time. A proper explicit queue
 // (not a promise chain) is used so resolved promises are released from
 // memory and don't accumulate across the page session.
-// =====================
 
 function runNextInQueue() {
 
@@ -327,8 +294,7 @@ function runNextInQueue() {
                 // Single sigmoid output — value IS the AI probability
                 score = raw[0];
             } else {
-                // Multi-class: softmax then take the AI class
-                // Log both orderings so you can confirm which is correct
+
                 const probs = softmax(raw);
                 console.log("AISeeYou: probs[0] (human?):", probs[0], "probs[1] (AI?):", probs[1]);
                 score = probs[1];
@@ -355,40 +321,40 @@ function predict(text) {
     });
 }
 
-// =====================
 // HIGHLIGHT
 // Background is applied to the containerEl (which always has block layout
 // and real dimensions) rather than textEl, which on X/Threads can be an
 // inline span whose layout collapses if display is changed.
 // Badge is appended to containerEl so it always has a visible anchor.
-// =====================
 
 function highlightElement(containerEl, textEl, score) {
 
     if (!containerEl.isConnected) return;
-    if (containerEl.dataset.aiDone === "true") return;
 
-    containerEl.dataset.aiDone = "true";
+    // Remove old badge if re-applying
+    const existing = containerEl.querySelector(".ai-detector-badge");
+    if (existing) existing.remove();
+    containerEl.style.removeProperty("background");
+    containerEl.style.removeProperty("outline");
 
     const mid = settings.threshold - 0.15;
 
+    if (!settings.showHuman && score <= settings.threshold) return;
+
+    containerEl.dataset.aiDone = "true";
+
     const color =
         score > settings.threshold ? "rgba(255,0,0,0.35)"
-            : score > mid ? "rgba(255,165,0,0.30)"
-                : "rgba(0,200,0,0.20)";
+        : score > mid ? "rgba(255,165,0,0.30)"
+        : "rgba(0,200,0,0.20)";
 
     const badgeColor =
         score > settings.threshold ? "red"
-            : score > mid ? "orange"
-                : "green";
+        : score > mid ? "orange"
+        : "green";
 
-    // Apply background to containerEl — it always has block layout and
-    // real dimensions. Applying to an inline textEl (e.g. X's tweetText
-    // span) breaks the platform layout and gets overridden.
     containerEl.style.setProperty("outline", "2px solid " + badgeColor, "important");
     containerEl.style.setProperty("background", color, "important");
-
-    if (containerEl.querySelector(".ai-detector-badge")) return;
 
     const badge = document.createElement("div");
     badge.className = "ai-detector-badge";
@@ -409,13 +375,9 @@ function highlightElement(containerEl, textEl, score) {
         "z-index:9999 !important;" +
         "position:relative !important;"
     );
-
     containerEl.appendChild(badge);
 }
-
-// =====================
 // BLOCK OVERLAY
-// =====================
 
 function blockElement(containerEl) {
 
@@ -457,12 +419,8 @@ function blockElement(containerEl) {
     containerEl.appendChild(overlay);
 }
 
-// =====================
 // SCAN ONE CONTAINER
-// =====================
-
 async function scanContainer(containerEl, textSelector, platformName) {
-
     if (!containerEl) return;
     if (!isVisible(containerEl)) return;
     if (containerEl.dataset.aiBlocked === "true") return;
@@ -470,53 +428,67 @@ async function scanContainer(containerEl, textSelector, platformName) {
 
     containerEl.dataset.aiQueued = "true";
 
-    const textEl = resolveBestTextEl(containerEl, textSelector);
+    // Expand "See more" before resolving text
+    const seeMore = [...containerEl.querySelectorAll("div[role='button'], span[role='button']")]
+        .find(el => /^\s*see more\s*$/i.test(el.innerText));
 
-    if (!textEl) {
-        console.warn("AISeeYou:", platformName, "— no text element, selector:", textSelector);
-        return;
+    if (seeMore) {
+        seeMore.click();
+        await new Promise(r => setTimeout(r, 500));
     }
 
-    const text = textEl.innerText?.trim();
+    // Resolve AFTER expansion so innerText is full
+    const textEl = resolveBestTextEl(containerEl, textSelector);
+    if (!textEl) return;
 
+    const text = textEl.innerText?.trim();
     if (!text) return;
 
     const words = text.split(/\s+/).length;
-
-    console.log("AISeeYou:", platformName, "—", words, "words");
-
     if (words < settings.minWords || words > MAX_WORDS) return;
 
     const hash = simpleHash(text);
     const now = Date.now();
     const prev = scannedHashes.get(hash);
-
     if (prev && now - prev < 15000) return;
 
     scannedHashes.set(hash, now);
 
+    debugTokens(text);
+
     try {
-
         const score = await predict(text);
-
-        console.log("AISeeYou:", platformName, "— score:", score);
-
+        containerEl.dataset.aiScore = score;
         logs.push({ platform: platformName, text: text.slice(0, 200), words, score, time: Date.now() });
-
-        if (settings.mode === "block" && score > settings.threshold) {
-            blockElement(containerEl);
-        } else {
-            highlightElement(containerEl, textEl, score);
-        }
-
+        applyResult(containerEl, textEl, score, platformName);
     } catch (err) {
         console.error("AISeeYou: predict failed:", err);
     }
 }
 
-// =====================
+function applyResult(containerEl, textEl, score, platformName) {
+
+    if (!containerEl.isConnected) return;
+
+    containerEl.dataset.aiDone = "false";
+    containerEl.dataset.aiBlocked = "false";
+    const badge = containerEl.querySelector(".ai-detector-badge");
+    if (badge) badge.remove();
+    containerEl.style.removeProperty("background");
+    containerEl.style.removeProperty("outline");
+
+    const mid = settings.threshold - 0.15;
+
+    if (!settings.showHuman && score <= settings.threshold) return; // hide non-AI
+
+    if (settings.mode === "block" && score > settings.threshold) {
+        blockElement(containerEl);
+    } else {
+        highlightElement(containerEl, textEl, score);
+    }
+}
+
 // SCAN PAGE
-// =====================
 
 function scanPage() {
 
@@ -536,9 +508,7 @@ function scanPage() {
     });
 }
 
-// =====================
 // SETTINGS
-// =====================
 
 function loadSettings(cb) {
 
@@ -548,19 +518,18 @@ function loadSettings(cb) {
     }
 
     chrome.storage.sync.get(
-        ["minWords", "mode", "threshold"],
+        ["minWords", "mode", "threshold", "showHuman"],
         (data) => {
             settings.minWords = data?.minWords ?? 30;
             settings.mode = data?.mode ?? "highlight";
             settings.threshold = data?.threshold ?? 0.80;
+            settings.showHuman = data?.showHuman ?? true;
             if (cb) cb();
         }
     );
 }
 
-// =====================
 // BOOTSTRAP
-// =====================
 
 async function bootstrap() {
 
@@ -588,9 +557,7 @@ async function bootstrap() {
 
 bootstrap();
 
-// =====================
 // MUTATION OBSERVER
-// =====================
 
 let running = false;
 
@@ -608,9 +575,7 @@ const observer = new MutationObserver(() => {
 
 observer.observe(document.body, { childList: true, subtree: true });
 
-// =====================
 // MESSAGE LISTENER
-// =====================
 
 chrome.runtime.onMessage.addListener((msg) => {
 
@@ -626,6 +591,39 @@ chrome.runtime.onMessage.addListener((msg) => {
     }
 
     if (msg.action === "settingsChanged") {
-        loadSettings();
-    }
+    loadSettings(() => {
+        document.querySelectorAll("[data-ai-score]").forEach(el => {
+            const score = parseFloat(el.dataset.aiScore);
+            el.dataset.aiDone = "false";
+            const textEl = resolveBestTextEl(el, null);
+            highlightElement(el, textEl, score);
+        });
+    });
+}
 });
+
+
+function debugTokens(text) {
+    const normalized = TOKENIZER._normalize(text);
+    const pre = TOKENIZER._preTokenize(normalized);
+
+    const pieces = [];
+    const ids = [];
+
+    for (const word of pre) {
+        const wp = TOKENIZER._wordpiece(word);
+        for (const p of wp) {
+            pieces.push(p);
+            ids.push(TOKENIZER.vocab[p] ?? TOKENIZER.UNK);
+        }
+    }
+
+    const finalIds = [TOKENIZER.CLS, ...ids.slice(0, TOKENIZER.maxLen - 2), TOKENIZER.SEP];
+    while (finalIds.length < TOKENIZER.maxLen) finalIds.push(TOKENIZER.PAD);
+
+    console.log("normalized", normalized);
+    console.log("preTokens", pre);
+    console.log("wordpieces", pieces);
+    console.log("tokenIds", finalIds);
+    console.log("attentionMask", finalIds.map((_, i) => i < (ids.length + 2) ? 1 : 0));
+}

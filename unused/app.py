@@ -1,46 +1,34 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import torch
-import os
-import json
 import traceback
-import sys
 
-
-from transformers import (
-    DistilBertTokenizerFast,
-    DistilBertForSequenceClassification
-)
-
-try:
-    print("Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-
-    print("Loading model...")
-    model = AutoModelForSequenceClassification.from_pretrained(MODEL_ID)
-
-    print("Model loaded successfully")
-except Exception as e:
-    print("FAILED DURING LOAD")
-    traceback.print_exc()
-    sys.exit(1)
-
+from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassification
 
 app = Flask(__name__)
 CORS(app)
 
-
-# SAVE_PATH = "./ai_detector_model" # local
 SAVE_PATH = "ngyishen/AISeeYou"
 
+try:
+    print("Loading tokenizer...")
+    tokenizer = DistilBertTokenizerFast.from_pretrained(SAVE_PATH)
 
-tokenizer = DistilBertTokenizerFast.from_pretrained(SAVE_PATH)
-model = DistilBertForSequenceClassification.from_pretrained(SAVE_PATH)
-model.eval()
+    print("Loading model...")
+    model = DistilBertForSequenceClassification.from_pretrained(SAVE_PATH)
+
+    model.eval()
+    print("Model loaded successfully")
+
+except Exception:
+    print("FAILED DURING LOAD")
+    traceback.print_exc()
+    raise
+
 
 def predict_single(text):
     inputs = tokenizer(
-        text.lower(),
+        text,
         return_tensors="pt",
         truncation=True,
         padding=True,
@@ -53,29 +41,36 @@ def predict_single(text):
     probs = torch.nn.functional.softmax(outputs.logits, dim=1)
 
     return {
-        "human_prob": probs[0][0].item(),
-        "ai_prob": probs[0][1].item()
+        "human_prob": float(probs[0][0]),
+        "ai_prob": float(probs[0][1])
     }
+
 
 @app.route("/")
 def home():
     return "AI Detector API is running"
 
-# Single text endpoint
+
 @app.route("/predict", methods=["POST"])
 def predict():
-    data = request.json
-    result = predict_single(data["text"])
-    return jsonify(result)
+    data = request.get_json(silent=True)
 
-# Batch endpoint
+    if not data or "text" not in data:
+        return jsonify({"error": "Missing 'text' field"}), 400
+
+    return jsonify(predict_single(data["text"]))
+
+
 @app.route("/predict_batch", methods=["POST"])
 def predict_batch():
-    data = request.json
-    texts = data["texts"]
+    data = request.get_json(silent=True)
 
-    results = []
-    for t in texts:
-        results.append(predict_single(t))
+    if not data or "texts" not in data:
+        return jsonify({"error": "Missing 'texts' field"}), 400
 
+    results = [predict_single(t) for t in data["texts"]]
     return jsonify(results)
+
+
+if __name__ == "__main__":
+    app.run(debug=True)

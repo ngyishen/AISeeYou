@@ -4,7 +4,7 @@ from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassific
 import json
 import os
 
-SAVE_PATH = "./ai_detector_model"
+SAVE_PATH = "./model"
 
 # Load tokenizer & model
 tokenizer = DistilBertTokenizerFast.from_pretrained(SAVE_PATH)
@@ -16,7 +16,31 @@ model.eval()
 with open(os.path.join(SAVE_PATH, "label_map.json"), "r") as f:
     id2label = json.load(f)
 
+
+def debug_tokens(text):
+    encoded = tokenizer(
+        text.lower(),
+        truncation=True,
+        padding="max_length",
+        max_length=128,
+        return_tensors="pt"
+    )
+
+    input_ids = encoded["input_ids"][0].tolist()
+    attention_mask = encoded["attention_mask"][0].tolist()
+
+    tokens = tokenizer.convert_ids_to_tokens(input_ids)
+
+    print("normalized:", text.lower())
+    print("tokens:", tokens)
+    print("input_ids:", input_ids)
+    print("attention_mask:", attention_mask)
+
+
+
 def predict_text(text):
+    debug_tokens(text)
+
     inputs = tokenizer(
         text.lower(),
         return_tensors="pt",
@@ -83,8 +107,9 @@ def home():
 @app.route("/predict", methods=["POST"])
 def api_predict():
     data = request.json
+    print("RECEIVED TEXT:", repr(data["text"][:200]))
     return jsonify(predict_text(data["text"]))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-    
+
