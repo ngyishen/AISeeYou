@@ -1,12 +1,7 @@
 // ORT SETUP
 
-// ort is imported at the top of this file via:
-//   import * as ort from "onnxruntime-web";
-// esbuild bundles it. WASM files must be in extension/wasm/ and listed
-// in manifest.json web_accessible_resources.
-// ort is NOT imported here — esbuild breaks ORT's internal WASM loading
-// when it bundles it. Instead, ort.min.js is listed before content.bundle.js
-// in manifest.json and exposes `ort` on globalThis automatically.
+// ORT wasm only supports one active session.run at a time
+// Manual FIFO queue 
 // WASM path is configured once ORT is confirmed ready in waitForORT().
 
 let ortReady = false;
@@ -28,7 +23,7 @@ function waitForORT() {
         const start = Date.now();
         const check = () => {
             if (typeof globalThis.ort !== "undefined" && globalThis.ort.InferenceSession) {
-                // Configure WASM paths now that we know ort is present
+                // Configure WASM paths now that ort is present
                 globalThis.ort.env.wasm.wasmPaths = chrome.runtime.getURL("wasm/");
                 globalThis.ort.env.wasm.numThreads = 1;
                 globalThis.ort.env.wasm.proxy = false;
@@ -202,8 +197,13 @@ const PLATFORMS = [
         textNode: null
     },
     {
+        name: "Facebook3",
+        container: "div[data-ad-rendering-role='story_message']",
+        textNode: null
+    },
+    {
         name: "Threads",
-        container: "article[role='article']", 
+        container: "article[role='article']",
         textNode: "div[dir='auto']"
     }
 ];
@@ -345,13 +345,13 @@ function highlightElement(containerEl, textEl, score) {
 
     const color =
         score > settings.threshold ? "rgba(255,0,0,0.35)"
-        : score > mid ? "rgba(255,165,0,0.30)"
-        : "rgba(0,200,0,0.20)";
+            : score > mid ? "rgba(255,165,0,0.30)"
+                : "rgba(0,200,0,0.20)";
 
     const badgeColor =
         score > settings.threshold ? "red"
-        : score > mid ? "orange"
-        : "green";
+            : score > mid ? "orange"
+                : "green";
 
     containerEl.style.setProperty("outline", "2px solid " + badgeColor, "important");
     containerEl.style.setProperty("background", color, "important");
@@ -377,6 +377,7 @@ function highlightElement(containerEl, textEl, score) {
     );
     containerEl.appendChild(badge);
 }
+
 // BLOCK OVERLAY
 
 function blockElement(containerEl) {
@@ -409,7 +410,7 @@ function blockElement(containerEl) {
         "background:rgba(255,0,0,0.12) !important;" +
         "border:1px solid red !important;" +
         "border-radius:5px !important;" +
-        "font-size:12px !important;" +
+        "font-size:16px !important;" +
         "color:red !important;" +
         "text-align:center !important;" +
         "max-width:320px !important;"
@@ -591,15 +592,15 @@ chrome.runtime.onMessage.addListener((msg) => {
     }
 
     if (msg.action === "settingsChanged") {
-    loadSettings(() => {
-        document.querySelectorAll("[data-ai-score]").forEach(el => {
-            const score = parseFloat(el.dataset.aiScore);
-            el.dataset.aiDone = "false";
-            const textEl = resolveBestTextEl(el, null);
-            highlightElement(el, textEl, score);
+        loadSettings(() => {
+            document.querySelectorAll("[data-ai-score]").forEach(el => {
+                const score = parseFloat(el.dataset.aiScore);
+                el.dataset.aiDone = "false";
+                const textEl = resolveBestTextEl(el, null);
+                highlightElement(el, textEl, score);
+            });
         });
-    });
-}
+    }
 });
 
 

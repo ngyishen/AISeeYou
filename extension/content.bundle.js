@@ -1,5 +1,5 @@
 (() => {
-  // content.js
+  // extension/content.js
   var ortReady = false;
   var inferenceRunning = false;
   var inferenceQueue = [];
@@ -172,6 +172,11 @@
       textNode: null
     },
     {
+      name: "Facebook3",
+      container: "div[data-ad-rendering-role='story_message']",
+      textNode: null
+    },
+    {
       name: "Threads",
       container: "article[role='article']",
       textNode: "div[dir='auto']"
@@ -288,7 +293,7 @@
     warning.textContent = "This content has been blocked \u2014 high probability of being AI generated.";
     warning.setAttribute(
       "style",
-      "padding:12px 16px !important;background:rgba(255,0,0,0.12) !important;border:1px solid red !important;border-radius:5px !important;font-size:12px !important;color:red !important;text-align:center !important;max-width:320px !important;"
+      "padding:12px 16px !important;background:rgba(255,0,0,0.12) !important;border:1px solid red !important;border-radius:5px !important;font-size:16px !important;color:red !important;text-align:center !important;max-width:320px !important;"
     );
     overlay.appendChild(warning);
     containerEl.appendChild(overlay);
